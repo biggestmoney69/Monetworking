@@ -1,0 +1,10 @@
+{
+  "name": "monetworking",
+  "version": "1.0.0",
+  "description": "Live Monet-style impressionist painting from your camera, in the browser.",
+  "private": true,
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node test/screenshot.cjs"
+  }
+}
