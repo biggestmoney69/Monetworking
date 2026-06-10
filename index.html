@@ -83,6 +83,30 @@
         <button id="b-demo" title="Paint a procedural water-lily garden instead">Demo scene</button>
       </div>
 
+      <section class="atelier">
+        <h3><span class="dot" id="ai-dot"></span>AI atelier</h3>
+        <p class="hint">A diffusion model re-imagines each frame — structure kept,
+          materials replaced. Needs the local server: <code>python server/monet_server.py</code></p>
+        <input type="text" id="ai-url" value="ws://localhost:8765" spellcheck="false"
+               title="Address of the diffusion server">
+        <textarea id="ai-prompt" rows="3" spellcheck="false"
+                  title="What the scene should be disguised as">an impressionist oil painting of a water lily pond by Claude Monet, soft morning light, thick impasto brushstrokes, pastel palette</textarea>
+        <div class="slider">
+          <label for="s-strength"><span>Dream strength</span><output id="o-strength"></output></label>
+          <input type="range" id="s-strength" min="0.2" max="0.95" step="0.01" value="0.55"
+                 title="How far the model may drift from the camera frame">
+        </div>
+        <div class="slider">
+          <label for="s-structure"><span>Structure lock</span><output id="o-structure"></output></label>
+          <input type="range" id="s-structure" min="0" max="1" step="0.01" value="0.6"
+                 title="Depth-ControlNet weight: keeps your silhouette while materials dissolve (server --controlnet mode)">
+        </div>
+        <div class="buttons">
+          <button id="b-ai">Connect AI</button>
+        </div>
+        <p class="hint" id="ai-status">offline</p>
+      </section>
+
       <footer>
         <span id="meta"></span>
         <span id="fps"></span>

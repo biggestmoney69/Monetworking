@@ -294,6 +294,61 @@ input[type="range"]::-moz-range-thumb {
 .buttons button:hover { background: linear-gradient(180deg, #fcf7e9, #f0e6c9); }
 .buttons button:active { transform: translateY(1px); box-shadow: none; }
 
+/* ----- AI atelier ----- */
+
+.atelier {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #c9b88f;
+}
+
+.atelier h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #b05f4a;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.3);
+}
+
+.dot.on { background: #5f8f55; }
+
+.atelier .hint {
+  margin: 4px 0 8px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: #8b7a51;
+  line-height: 1.45;
+}
+
+.atelier .hint code { font-style: normal; font-size: 10.5px; }
+
+.atelier input[type="text"],
+.atelier textarea {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: #faf5e7;
+  border: 1px solid #c4b186;
+  border-radius: 3px;
+  resize: vertical;
+}
+
+.slider.inert { opacity: 0.4; pointer-events: none; }
+
 .placard footer {
   display: flex;
   justify-content: space-between;

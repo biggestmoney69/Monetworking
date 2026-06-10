@@ -1,0 +1,13 @@
+# Always needed
+websockets>=12
+pillow>=10
+
+# For real diffusion (skip in --mock mode). Install torch for YOUR hardware
+# first — see https://pytorch.org/get-started/locally/ — e.g. CUDA:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# then:
+#   pip install diffusers transformers accelerate
+#
+# --controlnet mode additionally downloads, on first run:
+#   Lykon/dreamshaper-8, lllyasviel/control_v11f1p_sd15_depth,
+#   latent-consistency/lcm-lora-sdv1-5, depth-anything/Depth-Anything-V2-Small-hf

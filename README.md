@@ -76,6 +76,51 @@ ripple dabs cross the lights, and bright pads occasionally carry a blossom.
 Float render targets are used for the tensor when `EXT_color_buffer_float`
 is available, with an 8-bit packed fallback otherwise.
 
+## The AI atelier — generative semantic camouflage
+
+The shader pipeline *repaints*; the atelier *re-imagines*. A local diffusion
+server receives each camera frame and regenerates it from noise under a
+prompt, so objects are genuinely reinterpreted — a wheel can become a bush.
+This is the real "car hidden as a forest" mechanism:
+
+```
+browser (this app)                         server/monet_server.py
+┌────────────────────────┐                ┌──────────────────────────────┐
+│ camera → source buffer │ ─ JPEG/WS ───▶ │ depth estimate (Depth-Anything)│
+│                        │                │   └▶ ControlNet locks structure│
+│ temporal blend ◀───────│ ◀─ JPEG/WS ──  │ img2img diffusion (SD-Turbo /  │
+│   └▶ weave + impasto   │                │   SD1.5+LCM) replaces materials│
+│       composite        │                └──────────────────────────────┘
+└────────────────────────┘
+```
+
+The two knobs map directly onto the camouflage idea:
+
+- **Dream strength** — img2img denoising strength: how far the model may
+  drift from your frame. High = materials fully dissolve into the prompt.
+- **Structure lock** — ControlNet-depth weight: how firmly your silhouette
+  is pinned while everything else dissolves. High lock + high strength is
+  the hidden-object sweet spot.
+
+Run it (Python 3.10+; an NVIDIA GPU makes it real-time):
+
+```sh
+pip install websockets pillow                  # always
+pip install torch diffusers transformers accelerate   # for real diffusion
+
+python server/monet_server.py --mock           # plumbing test, no ML
+python server/monet_server.py                  # SD-Turbo img2img (fast)
+python server/monet_server.py --controlnet     # depth-locked camouflage (best)
+```
+
+Then click **Connect AI** in the app and type any disguise into the prompt
+box. Models download from Hugging Face on first run. Rough expectations:
+SD-Turbo ≈ 15–25 fps and ControlNet+LCM ≈ 5–10 fps on a mid-range NVIDIA
+card; Apple Silicon a few fps; CPU is seconds-per-frame (use `--mock` to
+test the loop). Generated frames are temporally blended on the GPU (the
+**Wet paint** slider controls it) and still pass through the linen weave
+and impasto composite, so the result stays a painting on canvas.
+
 ## Testing
 
 ```sh
@@ -85,3 +130,10 @@ npm test     # needs playwright + chromium (npx playwright install chromium)
 Serves the app, opens headless Chromium with a **fake camera device**, waits
 for the pipeline to produce frames in both camera and demo modes, fails on any
 shader/console error or a blank canvas, and drops screenshots in `test/out/`.
+
+```sh
+node test/ai-mock.cjs
+```
+
+End-to-end test of the atelier loop: starts `monet_server.py --mock`, connects
+the app to it, and verifies frames make the full round trip onto the canvas.

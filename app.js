@@ -18,6 +18,10 @@
     overlay: $('#overlay'), overlayMsg: $('#overlay-msg'),
     toast: $('#toast'), fps: $('#fps'), meta: $('#meta'),
     bFlip: $('#b-flip'), bPause: $('#b-pause'), bSave: $('#b-save'), bDemo: $('#b-demo'),
+    bAi: $('#b-ai'), aiUrl: $('#ai-url'), aiPrompt: $('#ai-prompt'),
+    aiStatus: $('#ai-status'), aiDot: $('#ai-dot'),
+    sStrength: $('#s-strength'), oStrength: $('#o-strength'),
+    sStructure: $('#s-structure'), oStructure: $('#o-structure'),
   };
 
   const state = {
@@ -87,13 +91,14 @@
     return p;
   }
 
-  let progSource, progTensor, progBlur, progKuwahara, progComposite;
+  let progSource, progTensor, progBlur, progKuwahara, progComposite, progBlend;
   try {
     progSource = program('source', SHADERS.source);
     progTensor = program('tensor', SHADERS.tensor, tensorDefines);
     progBlur = program('blur', SHADERS.blur);
     progKuwahara = program('kuwahara', SHADERS.kuwahara, tensorDefines);
     progComposite = program('composite', SHADERS.composite);
+    progBlend = program('blend', SHADERS.blend);
   } catch (e) {
     return fatal(`Shader build failed — ${e.message}`);
   }
@@ -221,6 +226,157 @@
     }
   }
 
+  // ------------------------------------------------------- AI atelier (WS)
+  // Streams source frames to a local diffusion server (server/monet_server.py)
+  // and shows the generated paintings, temporally blended to calm flicker.
+  const ai = (state.ai = {
+    on: false, ws: null, inflight: false, ready: false,
+    bitmap: null, w: 0, h: 0, cur: 0, lastSend: 0,
+    texNew: null, blendA: null, blendB: null,
+  });
+  dbg.ai = { connected: false, roundtrips: 0 };
+  ai.texNew = makeTexture(0, 0, gl.RGBA8);
+  const capFull = document.createElement('canvas');
+  const capSmall = document.createElement('canvas');
+
+  function aiStatus(msg, ok) {
+    ui.aiStatus.textContent = msg;
+    ui.aiDot.classList.toggle('on', !!ok);
+  }
+
+  function aiInert(on) {
+    for (const id of ['#s-brush', '#s-q', '#s-camo']) {
+      $(id).closest('.slider').classList.toggle('inert', on);
+    }
+  }
+
+  let settingsTimer = 0;
+  function aiSendSettings() {
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(() => {
+      if (ai.ws?.readyState === 1) {
+        ai.ws.send(JSON.stringify({
+          type: 'settings',
+          prompt: ui.aiPrompt.value,
+          strength: +ui.sStrength.value,
+          structure: +ui.sStructure.value,
+        }));
+      }
+    }, 300);
+  }
+
+  // src framebuffer → upright ≤512px JPEG → websocket
+  function aiCapture() {
+    const { iw, ih } = state;
+    const buf = new Uint8Array(iw * ih * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.src.fbo);
+    gl.readPixels(0, 0, iw, ih, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    capFull.width = iw;
+    capFull.height = ih;
+    capFull.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(buf.buffer), iw, ih), 0, 0);
+    const s = 512 / Math.max(iw, ih);
+    const cw = Math.max(8, Math.round(iw * s));
+    const ch = Math.max(8, Math.round(ih * s));
+    capSmall.width = cw;
+    capSmall.height = ch;
+    const ctx = capSmall.getContext('2d');
+    ctx.save();
+    ctx.scale(1, -1);                       // readPixels rows are bottom-up
+    ctx.drawImage(capFull, 0, -ch, cw, ch);
+    ctx.restore();
+    capSmall.toBlob((blob) => {
+      if (blob && ai.ws?.readyState === 1) ai.ws.send(blob);
+      else ai.inflight = false;
+    }, 'image/jpeg', 0.82);
+  }
+
+  function aiDisconnect(msg) {
+    if (ai.ws) {
+      ai.ws.onclose = ai.ws.onerror = null;
+      try { ai.ws.close(); } catch { /* already closed */ }
+    }
+    ai.ws = null;
+    ai.on = false;
+    ai.ready = false;
+    ai.inflight = false;
+    dbg.ai.connected = false;
+    state.justReset = true;                 // don't wet-blend against stale paint
+    ui.bAi.textContent = 'Connect AI';
+    aiInert(false);
+    aiStatus(msg || 'offline', false);
+  }
+
+  function aiConnect() {
+    const url = ui.aiUrl.value.trim() || 'ws://localhost:8765';
+    aiStatus('connecting…', false);
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      return aiStatus(`bad address (${e.message})`, false);
+    }
+    ai.ws = ws;
+    ws.onopen = () => {
+      ai.on = true;
+      dbg.ai.connected = true;
+      ui.bAi.textContent = 'Disconnect AI';
+      aiInert(true);
+      const camoSlider = $('#s-camo');
+      camoSlider.value = 0;                 // the model paints the pond now
+      camoSlider.dispatchEvent(new Event('input'));
+      toast('AI atelier connected — the diffusion model takes the easel.');
+    };
+    ws.onmessage = async (ev) => {
+      if (typeof ev.data === 'string') {
+        const d = JSON.parse(ev.data);
+        if (d.type === 'hello') {
+          aiStatus(`connected — ${d.backend} on ${d.device}`, true);
+          aiSendSettings();
+        }
+        return;
+      }
+      ai.inflight = false;
+      dbg.ai.roundtrips++;
+      const bmp = await createImageBitmap(ev.data);
+      if (ai.bitmap) ai.bitmap.close();
+      ai.bitmap = bmp;                      // consumed by the render loop
+    };
+    ws.onclose = () => aiDisconnect('offline — start server/monet_server.py');
+    ws.onerror = () => aiDisconnect('connection failed — is the server running?');
+  }
+
+  // upload the newest generated frame and ease it into the blended state
+  function aiConsume(now) {
+    const bmp = ai.bitmap;
+    ai.bitmap = null;
+    if (bmp.width !== ai.w || bmp.height !== ai.h) {
+      ai.w = bmp.width;
+      ai.h = bmp.height;
+      for (const t of [ai.blendA, ai.blendB].filter(Boolean)) {
+        gl.deleteTexture(t.tex);
+        gl.deleteFramebuffer(t.fbo);
+      }
+      ai.blendA = makeTarget(ai.w, ai.h, gl.RGBA8);
+      ai.blendB = makeTarget(ai.w, ai.h, gl.RGBA8);
+      ai.ready = false;
+    }
+    tex(0, ai.texNew);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+    bmp.close();
+    ai.cur = 1 - ai.cur;
+    const dst = ai.cur ? ai.blendB : ai.blendA;
+    const old = ai.cur ? ai.blendA : ai.blendB;
+    const u = pass(progBlend, dst);
+    tex(0, ai.texNew);
+    tex(1, old.tex);
+    gl.uniform1i(u.uNew, 0);
+    gl.uniform1i(u.uOld, 1);
+    gl.uniform2f(u.uRes, ai.w, ai.h);
+    gl.uniform1f(u.uMix, ai.ready ? Math.min(state.params.wet, 0.85) : 0);
+    draw();
+    ai.ready = true;
+  }
+
   // ------------------------------------------------------------------ render
   const tex = (unit, texture) => {
     gl.activeTexture(gl.TEXTURE0 + unit);
@@ -257,10 +413,6 @@
     const painting = !state.paused;
 
     if (painting) {
-      const cur = 1 - state.lastPaint;
-      const paintCur = cur ? rt.paint1 : rt.paint0;
-      const paintPrev = cur ? rt.paint0 : rt.paint1;
-
       if (state.mode === 'camera' && video.readyState >= 2) {
         tex(0, videoTex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
@@ -275,49 +427,68 @@
       gl.uniform1i(u.uMirror, state.mirror ? 1 : 0);
       draw();
 
-      u = pass(progTensor, rt.tensorA);
-      tex(0, rt.src.tex);
-      gl.uniform1i(u.uSrc, 0);
-      gl.uniform2f(u.uRes, state.iw, state.ih);
-      draw();
+      // the shader painter rests while the diffusion model has the easel
+      if (!ai.on) {
+        const cur = 1 - state.lastPaint;
+        const paintCur = cur ? rt.paint1 : rt.paint0;
+        const paintPrev = cur ? rt.paint0 : rt.paint1;
 
-      u = pass(progBlur, rt.tensorB);
-      tex(0, rt.tensorA.tex);
-      gl.uniform1i(u.uTex, 0);
-      gl.uniform2f(u.uRes, state.iw, state.ih);
-      gl.uniform2f(u.uDir, 1, 0);
-      draw();
+        u = pass(progTensor, rt.tensorA);
+        tex(0, rt.src.tex);
+        gl.uniform1i(u.uSrc, 0);
+        gl.uniform2f(u.uRes, state.iw, state.ih);
+        draw();
 
-      u = pass(progBlur, rt.tensorA);
-      tex(0, rt.tensorB.tex);
-      gl.uniform1i(u.uTex, 0);
-      gl.uniform2f(u.uRes, state.iw, state.ih);
-      gl.uniform2f(u.uDir, 0, 1);
-      draw();
+        u = pass(progBlur, rt.tensorB);
+        tex(0, rt.tensorA.tex);
+        gl.uniform1i(u.uTex, 0);
+        gl.uniform2f(u.uRes, state.iw, state.ih);
+        gl.uniform2f(u.uDir, 1, 0);
+        draw();
 
-      u = pass(progKuwahara, paintCur);
-      tex(0, rt.src.tex);
-      tex(1, rt.tensorA.tex);
-      tex(2, paintPrev.tex);
-      gl.uniform1i(u.uSrc, 0);
-      gl.uniform1i(u.uTensor, 1);
-      gl.uniform1i(u.uPrev, 2);
-      gl.uniform2f(u.uRes, state.iw, state.ih);
-      gl.uniform1f(u.uRadius, p.brush);
-      gl.uniform1f(u.uQ, p.q);
-      gl.uniform1f(u.uWet, state.justReset ? 0 : p.wet);
-      draw();
+        u = pass(progBlur, rt.tensorA);
+        tex(0, rt.tensorB.tex);
+        gl.uniform1i(u.uTex, 0);
+        gl.uniform2f(u.uRes, state.iw, state.ih);
+        gl.uniform2f(u.uDir, 0, 1);
+        draw();
 
-      state.lastPaint = cur;
-      state.justReset = false;
+        u = pass(progKuwahara, paintCur);
+        tex(0, rt.src.tex);
+        tex(1, rt.tensorA.tex);
+        tex(2, paintPrev.tex);
+        gl.uniform1i(u.uSrc, 0);
+        gl.uniform1i(u.uTensor, 1);
+        gl.uniform1i(u.uPrev, 2);
+        gl.uniform2f(u.uRes, state.iw, state.ih);
+        gl.uniform1f(u.uRadius, p.brush);
+        gl.uniform1f(u.uQ, p.q);
+        gl.uniform1f(u.uWet, state.justReset ? 0 : p.wet);
+        draw();
+
+        state.lastPaint = cur;
+        state.justReset = false;
+      }
     }
 
-    const paintTex = (state.lastPaint ? rt.paint1 : rt.paint0).tex;
+    if (ai.on) {
+      if (ai.bitmap) aiConsume(now);
+      if (painting && !ai.inflight && ai.ws?.readyState === 1 && now - ai.lastSend > 80) {
+        ai.inflight = true;
+        ai.lastSend = now;
+        aiCapture();
+      }
+    }
+
+    const aiLive = ai.on && ai.ready;
+    const paintTex = aiLive
+      ? (ai.cur ? ai.blendB : ai.blendA).tex
+      : (state.lastPaint ? rt.paint1 : rt.paint0).tex;
     const u = pass(progComposite, null);
     tex(0, paintTex);
     gl.uniform1i(u.uPaint, 0);
     gl.uniform2f(u.uRes, ui.canvas.width, ui.canvas.height);
-    gl.uniform2f(u.uPaintRes, state.iw, state.ih);
+    gl.uniform2f(u.uPaintRes, aiLive ? ai.w : state.iw, aiLive ? ai.h : state.ih);
     gl.uniform1f(u.uDream, p.dream);
     gl.uniform1f(u.uWarm, p.warm);
     gl.uniform1f(u.uWeave, p.weave);
@@ -401,6 +572,20 @@
       startCamera(state.facing);
     }
   });
+
+  ui.bAi.addEventListener('click', () => {
+    if (ai.ws || ai.on) aiDisconnect('offline');
+    else aiConnect();
+  });
+
+  for (const [input, output] of [[ui.sStrength, ui.oStrength], [ui.sStructure, ui.oStructure]]) {
+    output.textContent = `${Math.round(input.value * 100)}%`;
+    input.addEventListener('input', () => {
+      output.textContent = `${Math.round(input.value * 100)}%`;
+      aiSendSettings();
+    });
+  }
+  ui.aiPrompt.addEventListener('input', aiSendSettings);
 
   // -------------------------------------------------------------------- boot
   useDemo();                      // paint something immediately

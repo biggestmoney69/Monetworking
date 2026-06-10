@@ -246,6 +246,22 @@ void main() {
   o = vec4(mix(paint, texture(uPrev, uv).rgb, uWet), 1.0);
 }`;
 
+// Temporal blend for AI-generated frames: diffusion output flickers between
+// frames, so each new result is eased into the previous blended state.
+SHADERS.blend = `
+uniform sampler2D uNew;
+uniform sampler2D uOld;
+uniform vec2  uRes;
+uniform float uMix;   // how much of the old image survives
+out vec4 o;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 a = texture(uNew, vec2(uv.x, 1.0 - uv.y)).rgb;   // image rows are top-down
+  vec3 b = texture(uOld, uv).rgb;
+  o = vec4(mix(a, b, uMix), 1.0);
+}`;
+
 SHADERS.composite = `
 uniform sampler2D uPaint;
 uniform vec2  uRes;       // output resolution
