@@ -25,6 +25,7 @@ water-lily garden instead; the **Demo scene** button switches between the two.
 
 | Slider | What it does |
 | --- | --- |
+| **Lily-pond camouflage** | Semantic camouflage: dissolves the scene into Monet's pond — shadows become deep water, midtones become lily-pad clusters, highlights become sky reflections and blossoms. Your silhouette stays hidden in the tonal masses, like a car disguised as a forest. 0 = plain plein-air painting. |
 | **Brush size** | Radius of the elliptical stroke kernel |
 | **Stroke definition** | How crisply strokes separate from their neighbours |
 | **Wet paint** | Blends each frame into the last — calms flicker, adds motion smear |
@@ -40,6 +41,7 @@ URL flags: `?demo=1` skips the camera, `?low=1` halves the working resolution
 for weak GPUs.
 
 ![A photo painted by the pipeline](docs/painted-photo.png)
+![The same photo dissolved into the lily pond](docs/camouflage.png)
 ![Canvas weave and impasto up close](docs/texture-zoom.png)
 
 ## How it works
@@ -62,6 +64,14 @@ Five WebGL2 passes per frame:
    gentle pastel), impasto lighting from the paint's luminance gradients, a
    procedural plain-weave linen with its own normal map, specular sheen, and
    a soft vignette — drawn at display resolution inside a gilded CSS frame.
+
+The **lily-pond camouflage** stage sits between the grade and the lighting.
+It is a structure-preserving material swap: a monotonic luminance → pond
+palette keeps the image's tonal ordering, while two jittered grid layers of
+elliptical lily pads inherit the painting's luminance at each pad's centre —
+so the *pad field itself* forms the hidden picture, the way canopy masses
+form the car in classic camouflage illusions. Deep shadows stay open water,
+ripple dabs cross the lights, and bright pads occasionally carry a blossom.
 
 Float render targets are used for the tensor when `EXT_color_buffer_float`
 is available, with an 8-bit packed fallback otherwise.

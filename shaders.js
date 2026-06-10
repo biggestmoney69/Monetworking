@@ -254,10 +254,22 @@ uniform float uDream;     // pastel Monet grade amount
 uniform float uWarm;      // 0 cool … 1 warm (0.5 neutral)
 uniform float uWeave;     // canvas texture strength
 uniform float uRelief;    // impasto strength
+uniform float uCamo;      // 0 plein-air … 1 hidden in the lily pond
+uniform float uTime;
 out vec4 o;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+vec2 hash2(vec2 p) {
+  return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453123);
+}
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i),              hash(i + vec2(1, 0)), u.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
 
 // plain-weave height field, q in thread units
 float cloth(vec2 q) {
@@ -270,9 +282,101 @@ float cloth(vec2 q) {
   return h + (hash(q * 37.0) - 0.5) * 0.18;   // stray fibres
 }
 
+/* ---- lily-pond camouflage -------------------------------------------------
+ * Semantic camouflage: the source's tonal structure is preserved but its
+ * materials are re-painted as Monet's pond — dark water in the shadows,
+ * lily-pad clusters in the midtones, sky reflections in the lights.
+ */
+
+// luminance → pond color, monotonic so the hidden image still reads
+vec3 pondPalette(float l) {
+  l = clamp(l, 0.0, 1.0);
+  vec3 c = mix(vec3(0.09, 0.13, 0.22), vec3(0.16, 0.25, 0.46), smoothstep(0.0, 0.25, l));
+  c = mix(c, vec3(0.42, 0.46, 0.70), smoothstep(0.22, 0.48, l));   // blue-violet
+  c = mix(c, vec3(0.36, 0.54, 0.43), smoothstep(0.42, 0.64, l));   // pond green
+  c = mix(c, vec3(0.63, 0.71, 0.56), smoothstep(0.60, 0.82, l));   // pale willow
+  c = mix(c, vec3(0.86, 0.89, 0.83), smoothstep(0.80, 0.98, l));   // cool cream light
+  return c;
+}
+
+// one grid layer of lily pads; returns (color, coverage).
+// Pads carry the image: each inherits the painting's luminance at its centre,
+// so the pad field itself forms the hidden picture (like canopy masses
+// forming a car) while open water survives only in the deepest shadows.
+vec4 lilyLayer(vec2 puv, float scale, float seed, float t, vec2 invAspect) {
+  vec2 q = puv * scale;
+  vec2 cell = floor(q);
+  vec4 best = vec4(0.0);
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 c = cell + vec2(i, j);
+      vec2 rnd = hash2(c + seed);
+      vec2 center = c + 0.5 + (rnd - 0.5) * 0.9
+                  + 0.02 * vec2(sin(t * 0.5 + rnd.x * 6.28), cos(t * 0.4 + rnd.y * 6.28));
+      float r = 0.40 + 0.34 * fract(rnd.x * 7.31);
+      vec2 d = (q - center) / r;
+      d.y *= 1.9;                                  // pads seen at an angle
+      float e = dot(d, d);
+      if (e > 1.0) continue;
+
+      float lc = luma(textureLod(uPaint, (center / scale) * invAspect, 0.0).rgb);
+      float gate = smoothstep(0.05, 0.16, lc);                     // deep shadow stays water
+      gate *= 1.0 - smoothstep(0.86, 0.97, lc) * 0.75;             // sparkle shows in lights
+      gate *= step(rnd.y, 0.96);                                   // a few cells empty
+      gate *= 0.55 + 0.45 * smoothstep(0.30, 0.62, noise(c * 0.33 + seed)); // clustering
+      if (gate <= 0.0) continue;
+
+      // green strongest in the midtones; darks keep violet, lights keep cream
+      float greenAmt = 0.55 * (1.0 - min(abs(lc - 0.45) * 2.4, 1.0)) + 0.12;
+      vec3 pc = mix(pondPalette(lc), vec3(0.30, 0.47, 0.31), greenAmt);
+      pc *= 0.84 + 0.34 * fract(rnd.y * 9.17);                     // broken color
+      // baked impasto rim: lit top-left edge, shaded lower-right
+      float rim = smoothstep(0.45, 1.0, e);
+      float lit = clamp(dot(normalize(d), normalize(vec2(-0.6, 0.8))), 0.0, 1.0);
+      pc += rim * lit * 0.20;
+      pc *= 1.0 - rim * (1.0 - lit) * 0.22;
+      // an occasional blossom on bright pads
+      if (fract(rnd.x * 13.77) > 0.80 && lc > 0.45) {
+        vec2 bd = (q - center - vec2(0.0, -0.08 * r)) / (r * 0.38);
+        bd.y *= 1.6;
+        float bm = 1.0 - smoothstep(0.45, 0.85, dot(bd, bd));
+        vec3 bc = mix(vec3(0.88, 0.56, 0.66), vec3(0.96, 0.93, 0.86), fract(rnd.y * 5.13));
+        pc = mix(pc, bc, bm);
+        pc += bm * lit * 0.12;
+      }
+      float mask = (1.0 - smoothstep(0.74, 0.98, e)) * gate;
+      if (mask > best.a) best = vec4(pc, mask);
+    }
+  }
+  return best;
+}
+
+vec3 pond(vec2 uv, vec3 paintCol, float t) {
+  float l = luma(paintCol);
+  vec2 aspect = vec2(uPaintRes.x / uPaintRes.y, 1.0);
+  vec2 invAspect = vec2(uPaintRes.y / uPaintRes.x, 1.0);
+  vec2 puv = uv * aspect;
+
+  // water: palette over rippled luminance, with horizontal reflection dabs
+  float rip = noise(vec2(puv.x * 9.0 + t * 0.05, puv.y * 70.0));
+  vec3 col = pondPalette(l * 0.94 + (rip - 0.5) * 0.14);
+  col = mix(col, paintCol, 0.10);                  // a whisper of the real colors
+  float streak = smoothstep(0.62, 0.78, rip) - smoothstep(0.78, 0.92, rip);
+  col = mix(col, vec3(0.85, 0.87, 0.82), streak * 0.35 * smoothstep(0.25, 0.6, l));
+  float shadowStreak = 1.0 - smoothstep(0.10, 0.30, rip);
+  col = mix(col, vec3(0.10, 0.15, 0.26), shadowStreak * 0.30 * (1.0 - smoothstep(0.5, 0.8, l)));
+
+  vec4 pads = lilyLayer(puv, 6.0, 0.0, t, invAspect);
+  col = mix(col, pads.rgb, pads.a);
+  vec4 small = lilyLayer(puv, 11.0, 7.7, t, invAspect);
+  col = mix(col, small.rgb, small.a * 0.92);
+  return col;
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uRes;
-  vec3 col = texture(uPaint, uv).rgb;
+  vec3 raw = texture(uPaint, uv).rgb;
+  vec3 col = raw;
 
   // -- Monet grade: cool lifted shadows, warm creamy lights, gentle pastel
   float l = luma(col);
@@ -281,6 +385,9 @@ void main() {
   tinted += (vec3(0.30, 0.31, 0.42) - tinted) * 0.22 * (1.0 - smoothstep(0.0, 0.35, l));
   col = mix(col, tinted, uDream);
   col *= mix(vec3(0.93, 0.98, 1.07), vec3(1.07, 1.00, 0.90), uWarm);
+
+  // -- dissolve into the lily pond
+  if (uCamo > 0.001) col = mix(col, pond(uv, raw, uTime), uCamo);
 
   // -- impasto: treat paint luminance as thickness, light it.
   // Central differences + a saturating curve keep hard edges from turning

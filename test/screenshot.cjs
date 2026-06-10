@@ -72,11 +72,19 @@ const SCENARIOS = [
       if (shaderErrors.length) throw new Error(`[${name}] app errors: ${shaderErrors.join('; ')}`);
       if (consoleErrors.length) throw new Error(`[${name}] console errors: ${consoleErrors.join('; ')}`);
 
-      await page.evaluate(() => { window.__monet.requestSample = true; });
-      await page.waitForFunction(() => window.__monet.sample !== undefined, null, { timeout: 30000 });
-      const sample = await page.evaluate(() => window.__monet.sample);
-      console.log(`[${name}] centre brightness ${sample.toFixed(3)}`);
-      if (sample < 0.02) throw new Error(`[${name}] canvas appears black (brightness ${sample})`);
+      for (const camo of [0, 1]) {
+        await page.evaluate((v) => {
+          const el = document.querySelector('#s-camo');
+          el.value = v;
+          el.dispatchEvent(new Event('input'));
+          window.__monet.sample = undefined;
+          window.__monet.requestSample = true;
+        }, camo);
+        await page.waitForFunction(() => window.__monet.sample !== undefined, null, { timeout: 30000 });
+        const sample = await page.evaluate(() => window.__monet.sample);
+        console.log(`[${name}] camo ${camo} centre brightness ${sample.toFixed(3)}`);
+        if (sample < 0.02) throw new Error(`[${name}] canvas appears black at camo ${camo}`);
+      }
 
       await page.screenshot({ path: path.join(outDir, `${name}.png`), animations: 'disabled' });
       await page.close();

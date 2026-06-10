@@ -27,7 +27,7 @@
     iw: 4, ih: 3,                  // internal paint resolution
     justReset: true,               // suppress temporal blend on fresh buffers
     lastPaint: 0,                  // index of most recently painted ping-pong target
-    params: { brush: 5, q: 8, dream: 0.55, warm: 0.6, weave: 0.55, relief: 0.55, wet: 0.45 },
+    params: { camo: 0.7, brush: 5, q: 8, dream: 0.55, warm: 0.6, weave: 0.55, relief: 0.55, wet: 0.45 },
   };
 
   function fatal(msg) {
@@ -322,6 +322,8 @@
     gl.uniform1f(u.uWarm, p.warm);
     gl.uniform1f(u.uWeave, p.weave);
     gl.uniform1f(u.uRelief, p.relief);
+    gl.uniform1f(u.uCamo, p.camo);
+    gl.uniform1f(u.uTime, (now - t0) / 1000);
     draw();
 
     if (dbg.requestSample) {
@@ -357,6 +359,7 @@
 
   // --------------------------------------------------------------------- UI
   const fmt = {
+    camo: (v) => `${Math.round(v * 100)}%`,
     brush: (v) => `${(+v).toFixed(1)} px`,
     q: (v) => (+v).toFixed(1),
     dream: (v) => `${Math.round(v * 100)}%`,
